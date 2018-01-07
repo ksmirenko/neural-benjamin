@@ -1,23 +1,23 @@
 import os
-
-import numpy as np
 import re
+import numpy as np
 from keras import Sequential
-from keras.layers import LSTM, Dense, Activation
+from keras.callbacks import ModelCheckpoint
+from keras.layers import LSTM, Dense, Dropout, Activation
 from keras.models import load_model
 from keras.optimizers import RMSprop
 
 bb_songs_path = "data/lyrics/Breaking Benjamin"
 bb_corpus_path = "data/bb_corpus.txt"
-bb_model_path = "bb_model.h5"
+bb_new_model_path = "bb_model_112epochs.h5"
 
-song_separator = "#\n"
-sequence_length = 50
-sequence_step = 5
+song_separator = "\n#\n"
+sequence_length = 100
+sequence_step = 1
 
-n_epochs = 30
+n_epochs = 100
 
-generated_length = 500
+generated_length = 600
 n_options_for_char = 5
 
 
@@ -34,11 +34,16 @@ def fetch_all_text(path):
     return corpus
 
 
+def preprocess_text(text):
+    text = text.lower()
+    text = re.sub(r'[ ]+', ' ', text)
+    text = re.sub(r'[^a-z0-9# \'\n]+', '', text)
+    return text
+
+
 def prepare_corpus(corpus_path):
     corpus = fetch_all_text(bb_songs_path)
-    corpus = corpus.lower()
-    corpus = re.sub(r'[ ]+', ' ', corpus)
-    corpus = re.sub(r'[^a-z0-9# \'\n]+', '', corpus)
+    corpus = preprocess_text(corpus)
     with open(corpus_path, mode='w+', encoding='utf8') as f:
         f.write(corpus)
 
@@ -61,7 +66,7 @@ def create_sequences(text, length, step):
     return sequences, next_chars
 
 
-def train_model(corpus_path, model_path, n_epochs):
+def train_model(corpus_path, new_model_path, n_epochs, old_model_path=None):
     corpus, chars, char_indices = load_corpus(corpus_path)
     sequences, next_chars = create_sequences(corpus, sequence_length, sequence_step)
 
@@ -72,17 +77,25 @@ def train_model(corpus_path, model_path, n_epochs):
         for char_index, char in enumerate(sequence):
             X[sequence_index, char_index, char_indices[char]] = 1
 
-    # Build the NN
-    model = Sequential()
-    model.add(LSTM(128, input_shape=(sequence_length, len(chars))))
-    model.add(Dense(len(chars)))
-    model.add(Activation('softmax'))
-    optimizer = RMSprop(lr=0.01)
-    model.compile(loss='categorical_crossentropy', optimizer=optimizer)
+    if old_model_path is None:
+        # Build the model
+        model = Sequential()
+        model.add(LSTM(128, input_shape=(X.shape[1], X.shape[2])))
+        model.add(Dropout(0.2))
+        model.add(Dense(y.shape[1], activation='softmax'))
+        model.compile(loss='categorical_crossentropy', optimizer=RMSprop(lr=0.01))
+    else:
+        # Optionally load the model instead of building a new one
+        model = load_model(old_model_path)
+
+    # Optional callbacks
+    filepath = "data/intermediate/bb_model_improvement-{epoch:02d}-{loss:.4f}.h5"
+    checkpoint = ModelCheckpoint(filepath, monitor='loss', verbose=1, save_best_only=True, mode='min')
+    callbacks_list = [checkpoint]
 
     # Train
     model.fit(X, y, batch_size=128, epochs=n_epochs)
-    model.save(model_path)
+    model.save(new_model_path)
 
 
 def generate_song(corpus_path, model_path, length, song_start):
@@ -111,10 +124,24 @@ def generate_song(corpus_path, model_path, length, song_start):
     return generated
 
 
-prepare_corpus(bb_corpus_path)
-train_model(bb_corpus_path, bb_model_path, n_epochs=n_epochs)
-song = generate_song(corpus_path=bb_corpus_path,
-                     model_path=bb_model_path,
-                     length=generated_length,
-                     song_start="border line\ndead inside\ni don't mind\nfalling to pi")
-print(song)
+def prepare_song_start(text):
+    return preprocess_text(text)[:sequence_length]
+
+
+def write_song(out_path, song_start):
+    song_start = prepare_song_start(song_start)
+    if len(song_start) != sequence_length:
+        print("Error: incorrect length of song start!")
+        return
+    song = generate_song(bb_corpus_path, bb_new_model_path, generated_length, song_start)
+    with open(out_path, mode='w+', encoding='utf8') as f:
+        f.write(song)
+
+
+# prepare_corpus(bb_corpus_path)
+# train_model(bb_corpus_path, new_model_path=bb_new_model_path, n_epochs=n_epochs)
+
+write_song("out_songs/bb_3.txt", """"Shove me under you again
+I can't wait for this to end
+Sober, empty in the head
+I know I can never win""")
